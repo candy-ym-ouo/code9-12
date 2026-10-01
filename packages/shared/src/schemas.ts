@@ -196,9 +196,12 @@ export const searchQuerySchema = z.object({
   bbox: z.string().optional(),
   nearLat: z.coerce.number().optional(),
   nearLng: z.coerce.number().optional(),
+  nearRadiusKm: z.coerce.number().positive().max(20000).optional(),
   paletteHex: z.string().optional(),
   similarToAssetId: z.string().optional(),
   sort: z.enum(['recent', 'hit_rate', 'window_heat', 'distance', 'rarity']).default('recent'),
+  /** 降级编排的命中数目标：命中数达到该值即停止逐级放宽（默认 24，文档 15.3） */
+  minHits: z.coerce.number().int().min(1).max(100).optional(),
   page: z.coerce.number().int().min(1).default(1),
   size: z.coerce.number().int().min(1).max(100).default(24),
 });

@@ -150,11 +150,15 @@ export default function Search() {
         <Alert
           type="warning"
           showIcon
-          message="为了让结果不为空，系统放宽了条件（逐条列出，不做静默放宽）"
+          message={
+            result.minHits
+              ? `为了凑够 ${result.minHits} 张候选，系统按「标签 → 气象 → 距离」逐级放宽（逐条列出，不做静默放宽）`
+              : '为了让结果不为空，系统逐级放宽了条件（逐条列出，不做静默放宽）'
+          }
           description={
             <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {result.relaxed.map((r) => (
-                <li key={r.field}>{r.note}</li>
+              {result.relaxed.map((r, idx) => (
+                <li key={`${r.field}-${idx}`}>{r.note}</li>
               ))}
             </ul>
           }

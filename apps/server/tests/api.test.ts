@@ -447,3 +447,185 @@ describe('E10 备份与质量门', () => {
     expect(Object.values(res.body.dirs).every((v) => v === 'ok')).toBe(true);
   });
 });
+
+describe('E11 检索降级编排（标签 → 气象 → 距离逐级放宽）', () => {
+  const dgTagIds: Record<string, string> = {};
+  const dgCardIds: string[] = [];
+
+  async function makeCard(title: string): Promise<string> {
+    const created = await call('post', '/api/inspirations', { title });
+    expect(created.status).toBe(201);
+    dgCardIds.push(created.body.id);
+    return created.body.id;
+  }
+
+  async function makeSpot(lat: number, lng: number): Promise<string> {
+    const place = await call('post', '/api/places', { name: `降级地点-${lat}-${lng}`, city: '青海' });
+    const spot = await call('post', '/api/spots', { placeId: place.body.id, lat, lng, cameraBearing: 180 });
+    return spot.body.id;
+  }
+
+  async function setTiming(
+    inspirationId: string,
+    weatherProfile: Record<string, unknown>,
+  ): Promise<void> {
+    const res = await call('put', `/api/inspirations/${inspirationId}/timing`, {
+      timeAnchor: 'sunset',
+      anchorOffsetMin: 0,
+      elevationRange: [-90, 90],
+      azimuthRange: null,
+      azimuthTolerance: 15,
+      windowToleranceMin: 12,
+      weatherProfile,
+      seasonWindow: null,
+      notes: null,
+    });
+    expect(res.status).toBe(200);
+  }
+
+  it('准备：新建 3 个隔离标签与 3 张卡片（标签/气象矩阵 + 距离梯度）', async () => {
+    for (const name of ['降级标A', '降级标B', '降级标C']) {
+      const res = await call('post', '/api/tags', { domain: 'light', name });
+      expect(res.status).toBe(201);
+      dgTagIds[name] = res.body.id;
+    }
+
+    // A+B+雾；B+无气象；无标签+雪（A+B+C 均不命中它）
+    const c1 = await makeCard('降级矩阵卡一');
+    await call('post', '/api/inspirations/bulk-tag', {
+      ids: [c1],
+      addTagIds: [dgTagIds['降级标A'], dgTagIds['降级标B']],
+    });
+    const s1 = await makeSpot(35.0, 95.0);
+    await call('post', `/api/inspirations/${c1}/spot`, { spotId: s1 });
+    await setTiming(c1, { phenomena: ['fog'] });
+
+    const c2 = await makeCard('降级矩阵卡二');
+    await call('post', '/api/inspirations/bulk-tag', { ids: [c2], addTagIds: [dgTagIds['降级标B']] });
+    const s2 = await makeSpot(35.02, 95.02);
+    await call('post', `/api/inspirations/${c2}/spot`, { spotId: s2 });
+    await setTiming(c2, {});
+
+    const c3 = await makeCard('降级矩阵卡三');
+    const s3 = await makeSpot(35.3, 95.3);
+    await call('post', `/api/inspirations/${c3}/spot`, { spotId: s3 });
+    await setTiming(c3, { phenomena: ['snow'] });
+  });
+
+  it('严格态 0 命中时按命中数逐级放宽标签，每一级都解释并给出前后命中数', async () => {
+    const tags = `${dgTagIds['降级标A']},${dgTagIds['降级标B']},${dgTagIds['降级标C']}`;
+    // all（3/3）：三张卡都不满足 → 2/3：卡一命中（目标 2，继续）→ 1/3：卡一+卡二，达标停止
+    const res = await call('get', `/api/search?tagIds=${tags}&tagMode=all&minHits=2&size=24`);
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.minHits).toBe(2);
+    expect(res.body.relaxed).toHaveLength(2);
+
+    const [first, second] = res.body.relaxed as {
+      field: string;
+      from: string;
+      to: string;
+      hitsBefore: number;
+      hitsAfter: number;
+      note: string;
+    }[];
+    expect(first.field).toBe('tagMinMatch');
+    expect(first.from).toContain('3/3');
+    expect(first.hitsBefore).toBe(0);
+    expect(first.hitsAfter).toBe(1);
+    expect(first.note).toContain('命中 0 → 1 张');
+
+    expect(second.field).toBe('tagMinMatch');
+    expect(second.to).toContain('1/3');
+    expect(second.hitsBefore).toBe(1);
+    expect(second.hitsAfter).toBe(2);
+
+    const ids = res.body.items.map((i: { id: string }) => i.id);
+    expect(ids).toContain(dgCardIds[0]);
+    expect(ids).toContain(dgCardIds[1]);
+    expect(ids).not.toContain(dgCardIds[2]);
+  });
+
+  it('标签放宽达标后不再触碰气象与距离（放宽顺序固定）', async () => {
+    const tags = `${dgTagIds['降级标A']},${dgTagIds['降级标B']}`;
+    // all(2/2)=卡一，已满足 minHits=1 → 零放宽
+    const enough = await call('get', `/api/search?tagIds=${tags}&tagMode=all&minHits=1&size=24`);
+    expect(enough.body.total).toBe(1);
+    expect(enough.body.relaxed).toHaveLength(0);
+  });
+
+  it('放宽顺序固定：标签阶梯走完（含忽略标签）后才进入气象，距离永不参与', async () => {
+    // 严格态：3/3 标签 + 雾&雪同时满足 → 0 命中。
+    // 标签降到 2/3、1/3、忽略：卡一被气象 AND 卡住、卡二也不含雪，标签阶梯期间始终 0；
+    // 进入气象阶梯降到“任意 1/2”：卡一(fog)+卡二(无气象约束) 共 2 张，达标停止。
+    const tags3 = `${dgTagIds['降级标A']},${dgTagIds['降级标B']},${dgTagIds['降级标C']}`;
+    const res = await call(
+      'get',
+      `/api/search?tagIds=${tags3}&tagMode=all&phenomena=fog,snow&minHits=2&size=24`,
+    );
+    expect(res.body.total).toBe(2);
+    const fields = res.body.relaxed.map((r: { field: string }) => r.field);
+    // 前三个是标签（2/3 → 1/3 → 忽略），标签放完即达标，气象只走到“任意 1/2”
+    expect(fields.slice(0, 3)).toEqual(['tagMinMatch', 'tagMinMatch', 'tagMinMatch']);
+    expect(fields.slice(3)).toEqual(['phenomenaMinMatch']);
+    expect(fields).not.toContain('nearRadius');
+    expect(fields).not.toContain('bbox');
+    // 每一级都带前后命中数，且命中数单调不减
+    for (const r of res.body.relaxed as { hitsBefore: number; hitsAfter: number }[]) {
+      expect(typeof r.hitsBefore).toBe('number');
+      expect(typeof r.hitsAfter).toBe('number');
+      expect(r.hitsAfter).toBeGreaterThanOrEqual(r.hitsBefore);
+    }
+  });
+
+  it('标签维度本身已是最宽（任一模式单标签）时，阶梯直接从气象开始', async () => {
+    // 单标签 + tagMode=any → 标签要求就是 1 个，无档可放；
+    // 气象要求 fog+snow 同时满足：严格 0 → 1/2 卡一(fog) 命中 1 → 目标 2 未达 → 忽略气象：卡一+卡二
+    const res = await call(
+      'get',
+      `/api/search?tagIds=${dgTagIds['降级标B']}&tagMode=any&phenomena=fog,snow&minHits=2&size=24`,
+    );
+    expect(res.body.total).toBe(2);
+    const fields = res.body.relaxed.map((r: { field: string }) => r.field);
+    expect(fields).toEqual(['phenomenaMinMatch', 'phenomenaMinMatch']);
+    expect(res.body.relaxed[0].from).toContain('全部 2 项');
+    expect(res.body.relaxed[0].to).toContain('任意 1/2');
+    expect(res.body.relaxed[0].hitsBefore).toBe(0);
+    expect(res.body.relaxed[0].hitsAfter).toBe(1);
+    expect(res.body.relaxed[1].to).toBe('忽略天气现象要求');
+    expect(res.body.relaxed[1].hitsAfter).toBe(2);
+  });
+
+  it('标签与气象放完仍不足时逐级翻倍距离半径（nearRadiusKm 入参生效）', async () => {
+    // 原点（35.005,95.005）距卡一约 0.7km、卡二约 2.2km、卡三 ~40km，是孤立区域：
+    // 0.5km 内 0 张 → 翻倍到 1km 卡一进入，达标停止。
+    const res = await call(
+      'get',
+      '/api/search?nearLat=35.005&nearLng=95.005&nearRadiusKm=0.5&minHits=1&size=24',
+    );
+    expect(res.body.total).toBe(1);
+    const fields = res.body.relaxed.map((r: { field: string }) => r.field);
+    expect(fields[0]).toBe('nearRadius');
+    const step = res.body.relaxed[0] as { from: string; to: string; hitsBefore: number; hitsAfter: number };
+    expect(step.from).toContain('0.5 km');
+    expect(step.to).toContain('1 km');
+    expect(step.hitsBefore).toBe(0);
+    expect(step.hitsAfter).toBe(1);
+    // 每一步的“放宽后命中数”单调不减
+    const afters = res.body.relaxed.map((r: { hitsAfter: number }) => r.hitsAfter);
+    for (let i = 1; i < afters.length; i++) expect(afters[i]).toBeGreaterThanOrEqual(afters[i - 1]);
+    // 停止后返回的条目确实落在放宽后的半径内
+    expect(res.body.items[0].id).toBe(dgCardIds[0]);
+  });
+
+  it('相同输入重复请求：排序、总数与放宽说明完全一致', async () => {
+    const url = `/api/search?nearLat=35.005&nearLng=95.005&nearRadiusKm=0.5&minHits=2&size=24`;
+    const a = await call('get', url);
+    const b = await call('get', url);
+    expect(b.body.total).toBe(a.body.total);
+    expect(b.body.items.map((i: { id: string }) => i.id)).toEqual(
+      a.body.items.map((i: { id: string }) => i.id),
+    );
+    expect(b.body.relaxed).toEqual(a.body.relaxed);
+  });
+});

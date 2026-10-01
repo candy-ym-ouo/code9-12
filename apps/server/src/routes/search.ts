@@ -30,11 +30,15 @@ function toParams(query: unknown): SearchParams {
     minFillCount: q.minFillCount,
     placeId: q.placeId,
     bbox,
-    near: q.nearLat !== undefined && q.nearLng !== undefined ? { lat: q.nearLat, lng: q.nearLng } : undefined,
+    near:
+      q.nearLat !== undefined && q.nearLng !== undefined
+        ? { lat: q.nearLat, lng: q.nearLng, radiusKm: q.nearRadiusKm }
+        : undefined,
     paletteHex: q.paletteHex,
     similarToAssetId: q.similarToAssetId,
     excludeAlbum: (query as Record<string, string>).excludeAlbum,
     sort: q.sort,
+    minHits: q.minHits,
     page: q.page,
     size: q.size,
   };

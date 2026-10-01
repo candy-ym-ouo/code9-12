@@ -219,12 +219,18 @@ export interface SearchRelaxation {
   from: string;
   to: string;
   note: string;
+  /** 本次放宽前的命中数（文档 15.3：每级放宽都要可解释） */
+  hitsBefore?: number;
+  /** 本次放宽后的命中数 */
+  hitsAfter?: number;
 }
 
 export interface SearchResult {
   items: InspirationDto[];
   total: number;
   relaxed: SearchRelaxation[];
+  /** 降级编排实际采用的命中数目标（达到即停止放宽） */
+  minHits?: number;
   suggestions?: { tagIds: string[]; tagNames: string[]; message: string } | null;
 }
 
