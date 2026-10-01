@@ -386,8 +386,72 @@ describe('E8 检索与零结果兜底', () => {
   });
 
   it('零结果时返回放宽说明，不允许静默放宽', async () => {
-    const res = await call('get', '/api/search?q=zzz_not_exist_zzz');
+    const res = await call('get', '/api/search?q=zzz_not_exist_zzz&size=3');
     expect(Array.isArray(res.body.relaxed)).toBe(true);
+  });
+
+  it('按命中数逐级放宽标签与气象，并稳定返回总数与排序', async () => {
+    const created = await call('post', '/api/inspirations', { title: '降级检索：只命中第二标签' });
+    const fallbackId = created.body.id;
+    await call('post', '/api/inspirations/bulk-tag', {
+      ids: [fallbackId],
+      addTagIds: [tagIds['霓虹招牌']],
+    });
+    await call('put', `/api/inspirations/${fallbackId}/timing`, {
+      timeAnchor: 'sunset',
+      anchorOffsetMin: 0,
+      elevationRange: [-90, 90],
+      azimuthRange: null,
+      azimuthTolerance: 15,
+      windowToleranceMin: 12,
+      weatherProfile: { phenomena: ['fog'] },
+      seasonWindow: null,
+      notes: null,
+    });
+
+    const url = `/api/search?tagIds=${tagIds['逆光']},${tagIds['霓虹招牌']}&tagMode=all&phenomena=after_rain&size=3&sort=recent`;
+    const first = await call('get', url);
+    const second = await call('get', url);
+
+    expect(first.body.total).toBe(3);
+    expect(first.body.relaxed.map((r: { field: string }) => r.field)).toEqual([
+      'tagMode',
+      'tagIds',
+      'phenomena',
+    ]);
+    expect(first.body.relaxed[0]).toMatchObject({ hitCountBefore: 0, hitCountAfter: 0 });
+    expect(first.body.relaxed[1]).toMatchObject({ hitCountBefore: 0, hitCountAfter: 0 });
+    expect(first.body.relaxed[2]).toMatchObject({ hitCountBefore: 0, hitCountAfter: 3 });
+    expect(first.body.items.map((i: { id: string }) => i.id)).toEqual(
+      second.body.items.map((i: { id: string }) => i.id),
+    );
+    expect(second.body.total).toBe(first.body.total);
+  });
+
+  it('距离不足一页时说明每一档半径放宽，重复请求排序一致', async () => {
+    const place = await call('post', '/api/places', { name: '降级检索地点', city: '上海' });
+    const spot = await call('post', '/api/spots', {
+      placeId: place.body.id,
+      lat: 31.251,
+      lng: 121.456,
+      cameraBearing: 90,
+    });
+    const created = await call('post', '/api/inspirations', { title: '降级检索：距离外圈卡片' });
+    await call('post', `/api/inspirations/${created.body.id}/spot`, { spotId: spot.body.id });
+
+    const url =
+      '/api/search?nearLat=31.2471&nearLng=121.4462&radiusKm=0.2&size=3&sort=distance';
+    const first = await call('get', url);
+    const second = await call('get', url);
+    const fields = first.body.relaxed.map((r: { field: string }) => r.field);
+
+    expect(fields).toContain('distance');
+    expect(first.body.total).toBeGreaterThan(0);
+    expect(first.body.relaxed.at(-1).note).toContain('放宽后命中');
+    expect(first.body.items.map((i: { id: string }) => i.id)).toEqual(
+      second.body.items.map((i: { id: string }) => i.id),
+    );
+    expect(second.body.total).toBe(first.body.total);
   });
 
   it('非法参数返回 400 而不是 500', async () => {

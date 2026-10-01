@@ -30,7 +30,10 @@ function toParams(query: unknown): SearchParams {
     minFillCount: q.minFillCount,
     placeId: q.placeId,
     bbox,
-    near: q.nearLat !== undefined && q.nearLng !== undefined ? { lat: q.nearLat, lng: q.nearLng } : undefined,
+    near:
+      q.nearLat !== undefined && q.nearLng !== undefined
+        ? { lat: q.nearLat, lng: q.nearLng, radiusKm: q.radiusKm }
+        : undefined,
     paletteHex: q.paletteHex,
     similarToAssetId: q.similarToAssetId,
     excludeAlbum: (query as Record<string, string>).excludeAlbum,
@@ -40,7 +43,7 @@ function toParams(query: unknown): SearchParams {
   };
 }
 
-/** 组合检索（含零结果兜底，见文档 6.6 / 15.3） */
+/** 组合检索（含命中不足一页时的降级编排，见文档 6.6 / 15.3） */
 searchRouter.get(
   '/search',
   ah(async (req, res) => {

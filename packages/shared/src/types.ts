@@ -219,6 +219,8 @@ export interface SearchRelaxation {
   from: string;
   to: string;
   note: string;
+  hitCountBefore?: number;
+  hitCountAfter?: number;
 }
 
 export interface SearchResult {

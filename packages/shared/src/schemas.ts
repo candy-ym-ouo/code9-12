@@ -196,6 +196,7 @@ export const searchQuerySchema = z.object({
   bbox: z.string().optional(),
   nearLat: z.coerce.number().optional(),
   nearLng: z.coerce.number().optional(),
+  radiusKm: z.coerce.number().positive().max(500).optional(),
   paletteHex: z.string().optional(),
   similarToAssetId: z.string().optional(),
   sort: z.enum(['recent', 'hit_rate', 'window_heat', 'distance', 'rarity']).default('recent'),
